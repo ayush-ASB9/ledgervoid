@@ -40,7 +40,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ## Configure the AI provider
 
 Analysis uses any OpenAI-compatible chat completions API. By default it calls
-`https://llm.devanshx.com/v1` with the `anthropic/claude-opus-5-5` model.
+ `anthropic/claude-opus-5-5` model.
 
 1. Copy `.env.example` to `.env.local` and set `LLM_API_KEY` to your key. Keep
    `.env.local` private; it is ignored by Git. Never use a `NEXT_PUBLIC_`
