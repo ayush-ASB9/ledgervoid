@@ -13,7 +13,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    // Browser extensions and app shells (such as Amp's) add attributes to <html>
+    // before React hydrates. This ignores those attribute differences on <html> only.
+    <html lang="en" suppressHydrationWarning>
       <body>{children}</body>
     </html>
   );
