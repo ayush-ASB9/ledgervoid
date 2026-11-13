@@ -13,12 +13,12 @@ import { isAnalysisRateLimited } from "@/lib/financial/rate-limit";
 import type { ReportPage } from "@/lib/financial/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 // Any OpenAI-compatible chat completions API; override with LLM_BASE_URL.
 const DEFAULT_LLM_BASE_URL = "https://llm.devanshx.com/v1";
 const DEFAULT_LLM_MODEL = "anthropic/claude-opus-5-5";
-const UPSTREAM_TIMEOUT_MS = 55_000;
+const UPSTREAM_TIMEOUT_MS = 120_000;
 
 const errorBodySchema = z.object({
   error: z.object({ message: z.string().optional() }).optional(),
@@ -106,6 +106,7 @@ function getAnalysisText(analysis: z.infer<typeof financialAnalysisSchema>): str
 function validateEvidenceAndNumbers(
   analysis: z.infer<typeof financialAnalysisSchema>,
   pages: ReportPage[],
+  coverage: { pagesScanned: number },
   calculatedMetrics: ReturnType<typeof calculateFinancialMetrics>,
 ): boolean {
   const pageText = new Map(
@@ -130,6 +131,7 @@ function validateEvidenceAndNumbers(
     pages.flatMap(({ text }) => numericTokens(text).map(normalizeNumber)),
   );
   for (const page of pages) knownNumbers.add(String(page.page));
+  knownNumbers.add(String(coverage.pagesScanned));
   for (const metric of calculatedMetrics) {
     for (const token of numericTokens(metric.value.toFixed(2))) {
       knownNumbers.add(normalizeNumber(token));
@@ -166,7 +168,7 @@ function createPrompt(pages: ReportPage[], coverage: { pagesScanned: number; isT
           "Separate direct report facts, application calculations, interpretations, hypotheses, and missing information using the classification field.",
           "Do not calculate arithmetic. Use only the supplied deterministic calculations.",
           "Return only valid JSON matching this shape: {executiveSummary:{title,explanation,classification,evidence:[{page,quote}]},revenueTrends:[],profitability:[],keyDevelopments:[],risks:[],cashFlow:[],questions:[{question,evidence:[{page,quote}]}],limitations:[string]}. limitations is an array of plain strings, not objects. Use at most 5 items in each array.",
-          "Each finding requires title, explanation, classification (fact|calculation|interpretation|hypothesis|missing), and evidence. Keep findings concise. Evidence quotes must be exact excerpts.",
+          "Each finding requires title (at most 120 characters), explanation (at most 600 characters), classification (fact|calculation|interpretation|hypothesis|missing), and evidence (at most 3 items; questions at most 2). Keep findings concise. Evidence quotes must be exact excerpts of 8 to 500 characters: a full phrase, not a lone figure.",
         ].join(" "),
       },
       {
@@ -254,7 +256,7 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: 4000,
+        max_tokens: 16000,
         temperature: 0.1,
       }),
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
@@ -311,12 +313,32 @@ export async function POST(request: Request) {
     return responseError(502, "The model returned malformed analysis. Please retry.");
   }
 
-  // Models sometimes exceed the per-section item limit. Dropping the extra items
-  // adds nothing unverified, so trim them instead of rejecting the analysis.
+  // Models sometimes exceed the item limits or cite fragments too short to verify
+  // (such as a lone figure). Dropping those items and any finding left without
+  // evidence adds nothing unverified, so trim them instead of rejecting the analysis.
+  const trimEvidence = (item: unknown, max: number) => {
+    const evidence = (item as { evidence?: unknown } | null)?.evidence;
+    if (!Array.isArray(evidence)) return;
+    (item as { evidence: unknown[] }).evidence = evidence
+      .filter((entry) => String((entry as { quote?: unknown } | null)?.quote ?? "").trim().length >= 8)
+      .slice(0, max);
+  };
+  const hasSupport = (item: unknown) =>
+    (item as { classification?: unknown }).classification === "missing" ||
+    ((item as { evidence?: unknown[] }).evidence?.length ?? 1) > 0;
   if (analysisJson && typeof analysisJson === "object") {
     for (const [key, value] of Object.entries(analysisJson)) {
-      if (Array.isArray(value)) (analysisJson as Record<string, unknown>)[key] = value.slice(0, 5);
+      if (!Array.isArray(value)) continue;
+      if (key === "limitations") {
+        (analysisJson as Record<string, unknown>)[key] = value.slice(0, 5);
+        continue;
+      }
+      for (const item of value) trimEvidence(item, key === "questions" ? 2 : 3);
+      (analysisJson as Record<string, unknown>)[key] = value
+        .filter((item) => key === "questions" || hasSupport(item))
+        .slice(0, 5);
     }
+    trimEvidence((analysisJson as { executiveSummary?: unknown }).executiveSummary, 3);
   }
 
   const analysis = financialAnalysisSchema.safeParse(analysisJson);
@@ -324,7 +346,7 @@ export async function POST(request: Request) {
     return responseError(502, "The model response did not match the required analysis format. Please retry.");
   }
 
-  if (!validateEvidenceAndNumbers(analysis.data, input.data.pages, calculatedMetrics)) {
+  if (!validateEvidenceAndNumbers(analysis.data, input.data.pages, input.data.coverage, calculatedMetrics)) {
     return responseError(502, "The model response included unsupported evidence or figures. No analysis was displayed.");
   }
 

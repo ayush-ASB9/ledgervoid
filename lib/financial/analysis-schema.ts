@@ -44,7 +44,9 @@ const evidenceSchema = z.object({
 
 const findingSchema = z.object({
   title: z.string().min(1).max(120),
-  explanation: z.string().min(1).max(600),
+  // The prompt asks for at most 600 characters; this leaves room for models
+  // that overshoot slightly on long reports instead of rejecting the analysis.
+  explanation: z.string().min(1).max(1000),
   classification: z.enum([
     "fact",
     "calculation",
