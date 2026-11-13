@@ -15,8 +15,10 @@ import type { ReportPage } from "@/lib/financial/types";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const UPSTREAM_TIMEOUT_MS = 45_000;
+// Any OpenAI-compatible chat completions API; override with LLM_BASE_URL.
+const DEFAULT_LLM_BASE_URL = "https://llm.devanshx.com/v1";
+const DEFAULT_LLM_MODEL = "anthropic/claude-opus-5-5";
+const UPSTREAM_TIMEOUT_MS = 55_000;
 
 const errorBodySchema = z.object({
   error: z.object({ message: z.string().optional() }).optional(),
@@ -163,7 +165,7 @@ function createPrompt(pages: ReportPage[], coverage: { pagesScanned: number; isT
           "Each substantive finding must include an exact short quote copied from a supplied page and its page number. If the evidence is absent, use classification 'missing' with an empty evidence array and state what is unavailable.",
           "Separate direct report facts, application calculations, interpretations, hypotheses, and missing information using the classification field.",
           "Do not calculate arithmetic. Use only the supplied deterministic calculations.",
-          "Return only valid JSON matching this shape: {executiveSummary:{title,explanation,classification,evidence:[{page,quote}]},revenueTrends:[],profitability:[],keyDevelopments:[],risks:[],cashFlow:[],questions:[{question,evidence:[{page,quote}]}],limitations:[]}.",
+          "Return only valid JSON matching this shape: {executiveSummary:{title,explanation,classification,evidence:[{page,quote}]},revenueTrends:[],profitability:[],keyDevelopments:[],risks:[],cashFlow:[],questions:[{question,evidence:[{page,quote}]}],limitations:[string]}. limitations is an array of plain strings, not objects. Use at most 5 items in each array.",
           "Each finding requires title, explanation, classification (fact|calculation|interpretation|hypothesis|missing), and evidence. Keep findings concise. Evidence quotes must be exact excerpts.",
         ].join(" "),
       },
@@ -229,31 +231,30 @@ export async function POST(request: Request) {
     return responseError(400, input.error.issues[0]?.message ?? "The report data is invalid.");
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.LLM_API_KEY;
   if (!apiKey) {
     return responseError(
       503,
-      "OpenRouter is not configured. Add OPENROUTER_API_KEY to the server environment and restart the app.",
+      "The AI provider is not configured. Add LLM_API_KEY to the server environment and restart the app.",
     );
   }
 
-  const model = process.env.OPENROUTER_MODEL?.trim() || "openrouter/free";
+  const baseUrl = (process.env.LLM_BASE_URL?.trim() || DEFAULT_LLM_BASE_URL).replace(/\/+$/, "");
+  const model = process.env.LLM_MODEL?.trim() || DEFAULT_LLM_MODEL;
   const { calculatedMetrics, messages } = createPrompt(input.data.pages, input.data.coverage);
 
   let upstream: Response;
   try {
-    upstream = await fetch(OPENROUTER_URL, {
+    upstream = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": origin ?? new URL(request.url).origin,
-        "X-Title": "LedgerVoid",
       },
       body: JSON.stringify({
         model,
         messages,
-        max_tokens: 1800,
+        max_tokens: 4000,
         temperature: 0.1,
       }),
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
@@ -261,32 +262,32 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
-      return responseError(504, "OpenRouter took too long to respond. You can try again.");
+      return responseError(504, "The AI provider took too long to respond. You can try again.");
     }
-    return responseError(502, "Could not connect to OpenRouter. Check your connection and try again.");
+    return responseError(502, "Could not connect to the AI provider. Check your connection and try again.");
   }
 
   if (!upstream.ok) {
     if (upstream.status === 429) {
-      return responseError(429, "The configured OpenRouter model is rate-limited or unavailable. No paid-model fallback was attempted.");
+      return responseError(429, "The AI provider is rate-limiting requests. Please wait and try again.");
     }
     if (upstream.status === 401 || upstream.status === 403) {
-      return responseError(502, "OpenRouter rejected the server credentials. Check OPENROUTER_API_KEY and account access.");
+      return responseError(502, "The AI provider rejected the server credentials. Check LLM_API_KEY.");
     }
     if (upstream.status === 404) {
-      return responseError(502, "The configured OpenRouter model is unavailable to this account. Check OPENROUTER_MODEL.");
+      return responseError(502, "The configured model is unavailable. Check LLM_MODEL and LLM_BASE_URL.");
     }
     if (upstream.status === 402) {
-      return responseError(502, "OpenRouter reported a billing restriction or insufficient credits. Check the configured model and account; no paid-model fallback was attempted.");
+      return responseError(502, "The AI provider reported a billing restriction or insufficient credits.");
     }
-    return responseError(502, "OpenRouter could not complete this analysis. Check model availability and try again.");
+    return responseError(502, "The AI provider could not complete this analysis. Please try again.");
   }
 
   let upstreamJson: unknown;
   try {
     upstreamJson = await upstream.json();
   } catch {
-    return responseError(502, "OpenRouter returned an unreadable response. Please try again.");
+    return responseError(502, "The AI provider returned an unreadable response. Please try again.");
   }
 
   const completion = completionSchema.safeParse(upstreamJson);
@@ -297,10 +298,10 @@ export async function POST(request: Request) {
       ? upstreamError.data.error?.message?.toLowerCase() ?? ""
       : "";
 
-    if (providerMessage.includes("rate limit") || providerMessage.includes("no endpoints")) {
-      return responseError(429, "No free-model endpoint is currently available. Please try again later; no paid-model fallback was attempted.");
+    if (providerMessage.includes("rate limit")) {
+      return responseError(429, "The AI provider is rate-limiting requests. Please wait and try again.");
     }
-    return responseError(502, "OpenRouter returned an incomplete analysis. Please retry.");
+    return responseError(502, "The AI provider returned an incomplete analysis. Please retry.");
   }
 
   let analysisJson: unknown;
@@ -308,6 +309,14 @@ export async function POST(request: Request) {
     analysisJson = JSON.parse(content.replace(/^```(?:json)?\s*|\s*```$/g, ""));
   } catch {
     return responseError(502, "The model returned malformed analysis. Please retry.");
+  }
+
+  // Models sometimes exceed the per-section item limit. Dropping the extra items
+  // adds nothing unverified, so trim them instead of rejecting the analysis.
+  if (analysisJson && typeof analysisJson === "object") {
+    for (const [key, value] of Object.entries(analysisJson)) {
+      if (Array.isArray(value)) (analysisJson as Record<string, unknown>)[key] = value.slice(0, 5);
+    }
   }
 
   const analysis = financialAnalysisSchema.safeParse(analysisJson);
