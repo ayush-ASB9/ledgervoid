@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { BarChart3 } from "lucide-react";
 import type { FinancialPeriod, VerifiedFinancialFact } from "@/lib/financial/types";
+import { numberLocale } from "@/lib/utils";
 
 type ChartView = "performance" | "profitability" | "year-over-year";
 type FinancialSeries = "revenue" | "expenses" | "profit";
@@ -186,7 +187,7 @@ export function FinancialChart({
               tickFormatter={(value) =>
                 activeView === "year-over-year"
                   ? `${Number(value).toFixed(0)}%`
-                  : Number(value).toLocaleString("en-IN", {
+                  : Number(value).toLocaleString(numberLocale(financialPeriods.unit), {
                       notation: "compact",
                       maximumFractionDigits: 1,
                     })
@@ -205,7 +206,7 @@ export function FinancialChart({
               formatter={(value, name) => [
                 activeView === "year-over-year"
                   ? `${Number(value).toFixed(1)}%`
-                  : `${Number(value).toLocaleString("en-IN")} ${financialPeriods.unit ?? ""}`.trim(),
+                  : `${Number(value).toLocaleString(numberLocale(financialPeriods.unit))} ${financialPeriods.unit ?? ""}`.trim(),
                 getSeriesLabel(name),
               ]}
             />

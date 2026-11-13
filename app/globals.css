@@ -3323,3 +3323,84 @@ body {
     font-size: 30px;
   }
 }
+
+.expense-chart-layout {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.expense-chart-layout .donut-chart {
+  flex: none;
+  width: 170px;
+  height: 170px;
+}
+
+.expense-chart-layout .donut-center > span {
+  color: #e2e8ec;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.expense-chart-layout .donut-center small {
+  color: #8b96a3;
+  font-size: 11px;
+}
+
+.expense-categories {
+  display: grid;
+  width: 100%;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.expense-categories li {
+  display: grid;
+  align-items: center;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  color: #b4bec4;
+  font-size: 13px;
+}
+
+.expense-categories i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.expense-categories span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expense-categories strong {
+  color: #e2e8ec;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-panel .panel-title-group,
+.chart-panel .panel-title-group > div {
+  min-width: 0;
+}
+
+/* "Expense breakdown" and "BY CATEGORY" do not fit on one line in a narrow panel. */
+.expense-panel .panel-header {
+  flex-wrap: wrap;
+}
+
+.chart-panel .panel-title-group p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expense-legend span:last-child {
+  white-space: nowrap;
+}

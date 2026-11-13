@@ -5,6 +5,7 @@ import { AlertCircle, Check, FileText, FolderOpen, Upload, X } from "lucide-reac
 import { extractFinancialReport } from "@/lib/financial/pdf-extraction";
 import type {
   CalculatedFinancialMetric,
+  ExpenseBreakdown,
   ReportCoverage,
   ReportPage,
   VerifiedFinancialFact,
@@ -21,6 +22,7 @@ type ReportUploadProps = {
     coverage: ReportCoverage;
     reportedFacts: VerifiedFinancialFact[];
     calculatedMetrics: CalculatedFinancialMetric[];
+    expenseBreakdown: ExpenseBreakdown | null;
   } | null) => void;
 };
 

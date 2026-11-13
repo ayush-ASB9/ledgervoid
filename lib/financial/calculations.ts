@@ -3,6 +3,7 @@ import type {
   ReportPage,
   VerifiedFinancialFact,
 } from "@/lib/financial/types";
+import { extractStatementFacts } from "@/lib/financial/statements";
 
 const labels: {
   metric: VerifiedFinancialFact["metric"];
@@ -87,6 +88,20 @@ export function extractVerifiedFinancialFacts(pages: ReportPage[]): VerifiedFina
   }
 
   return facts;
+}
+
+/**
+ * Figures from the report's income and cash flow statements, falling back to
+ * single-amount lines such as "Net profit INR 190 crore" for metrics the
+ * statements do not cover.
+ */
+export function extractReportedFacts(pages: ReportPage[]): VerifiedFinancialFact[] {
+  const statementFacts = extractStatementFacts(pages);
+  const covered = new Set(statementFacts.map(({ metric }) => metric));
+  return [
+    ...statementFacts,
+    ...extractVerifiedFinancialFacts(pages).filter(({ metric }) => !covered.has(metric)),
+  ];
 }
 
 export function calculateFinancialMetrics(

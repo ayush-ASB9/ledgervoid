@@ -20,6 +20,16 @@ export type ExpenseCategory = {
   amount: number;
 };
 
+/** Expense lines from an income statement that add up to its reported total. */
+export type ExpenseBreakdown = {
+  label: string;
+  period: number;
+  unit: string;
+  page: number;
+  total: number;
+  categories: ExpenseCategory[];
+};
+
 export type ReportPage = {
   page: number;
   text: string;

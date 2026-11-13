@@ -11,8 +11,10 @@ import { MetricCard } from "@/components/dashboard/metric-card";
 import { ReportUpload } from "@/components/dashboard/report-upload";
 import { analysisResponseSchema, type AnalysisResponse } from "@/lib/financial/analysis-schema";
 import type { FinancialMetric } from "@/lib/financial/types";
+import { numberLocale } from "@/lib/utils";
 import type {
   CalculatedFinancialMetric,
+  ExpenseBreakdown,
   ReportCoverage,
   ReportPage,
   VerifiedFinancialFact,
@@ -24,6 +26,7 @@ type ExtractedReport = {
   coverage: ReportCoverage;
   reportedFacts: VerifiedFinancialFact[];
   calculatedMetrics: CalculatedFinancialMetric[];
+  expenseBreakdown: ExpenseBreakdown | null;
 };
 
 export function DashboardOverview() {
@@ -108,7 +111,7 @@ export function DashboardOverview() {
     return {
       label,
       value: fact.value,
-      displayValue: `${fact.value.toLocaleString("en-IN")} ${fact.unit}`,
+      displayValue: `${fact.value.toLocaleString(numberLocale(fact.unit))} ${fact.unit}`,
       description: fact.period ? `FY ${fact.period} · p. ${fact.page}` : `Reported · p. ${fact.page}`,
     };
   }
@@ -169,7 +172,7 @@ export function DashboardOverview() {
 
           <section aria-label="Financial charts" className="charts-grid">
             <FinancialChart facts={report?.reportedFacts ?? []} hasReport={report !== null} />
-            <ExpenseChart hasReport={report !== null} />
+            <ExpenseChart breakdown={report?.expenseBreakdown ?? null} hasReport={report !== null} />
           </section>
 
           <InsightsPanel

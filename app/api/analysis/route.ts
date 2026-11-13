@@ -7,7 +7,7 @@ import {
 } from "@/lib/financial/analysis-schema";
 import {
   calculateFinancialMetrics,
-  extractVerifiedFinancialFacts,
+  extractReportedFacts,
 } from "@/lib/financial/calculations";
 import { isAnalysisRateLimited } from "@/lib/financial/rate-limit";
 import type { ReportPage } from "@/lib/financial/types";
@@ -69,8 +69,10 @@ function normalizeWhitespace(text: string): string {
   return text.toLocaleLowerCase().replace(/\s+/g, " ").trim();
 }
 
+// A number starts at a word boundary and ends at its last digit, so "$416,161M"
+// reads as 416,161 and "page 31," as 31.
 function numericTokens(text: string): string[] {
-  return text.match(/\b\d[\d,]*(?:\.\d+)?%?\b/g) ?? [];
+  return text.match(/\b\d(?:[\d,]*\d)?(?:\.\d+)?(?!\d)/g) ?? [];
 }
 
 function normalizeNumber(token: string): string {
@@ -132,8 +134,12 @@ function validateEvidenceAndNumbers(
   );
   for (const page of pages) knownNumbers.add(String(page.page));
   knownNumbers.add(String(coverage.pagesScanned));
+  // Analyst questions may ask about the year after the latest one reported.
+  const reportedYears = [...knownNumbers].map(Number).filter((value) => value >= 2000 && value < 2100);
+  if (reportedYears.length > 0) knownNumbers.add(String(Math.max(...reportedYears) + 1));
+  // The model may round the app's calculations, such as 6.43% to 6.4% or 6%.
   for (const metric of calculatedMetrics) {
-    for (const token of numericTokens(metric.value.toFixed(2))) {
+    for (const token of [2, 1, 0].flatMap((digits) => numericTokens(metric.value.toFixed(digits)))) {
       knownNumbers.add(normalizeNumber(token));
     }
     knownNumbers.add(normalizeNumber(String(metric.value)));
@@ -145,7 +151,7 @@ function validateEvidenceAndNumbers(
 }
 
 function createPrompt(pages: ReportPage[], coverage: { pagesScanned: number; isTruncated: boolean }) {
-  const facts = extractVerifiedFinancialFacts(pages);
+  const facts = extractReportedFacts(pages);
   const calculatedMetrics = calculateFinancialMetrics(facts);
 
   const context = JSON.stringify({
@@ -352,7 +358,7 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     analysis: analysis.data,
-    reportedFacts: extractVerifiedFinancialFacts(input.data.pages),
+    reportedFacts: extractReportedFacts(input.data.pages),
     calculatedMetrics,
     model,
   });
