@@ -1,0 +1,203 @@
+name: Desktop release
+
+# Builds the macOS (universal) and Windows installers.
+# Push a tag such as v0.2.0 to also create a draft GitHub release with both installers.
+# Signing turns on when its secrets exist; see "Signing the desktop installers" in README.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: desktop
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      APPLE_CERTIFICATE_SECRET: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD_SECRET: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_API_ISSUER_SECRET: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_SECRET: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_PRIVATE_KEY_SECRET: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - run: npm ci
+
+      # Tauri treats a variable that is set to an empty string as configured, so only
+      # export signing variables whose secrets exist.
+      - name: Configure signing
+        run: |
+          if [ -z "$APPLE_CERTIFICATE_SECRET" ]; then
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "SIGNING=ad-hoc" >> "$GITHUB_ENV"
+            echo "::warning::APPLE_CERTIFICATE is not set, so the app is ad-hoc signed. macOS will warn users before opening it."
+            exit 0
+          fi
+          if [ -z "$APPLE_CERTIFICATE_PASSWORD_SECRET" ] || [ -z "$APPLE_API_ISSUER_SECRET" ] ||
+             [ -z "$APPLE_API_KEY_SECRET" ] || [ -z "$APPLE_API_PRIVATE_KEY_SECRET" ]; then
+            echo "::error::APPLE_CERTIFICATE is set, but APPLE_CERTIFICATE_PASSWORD, APPLE_API_ISSUER, APPLE_API_KEY, or APPLE_API_PRIVATE_KEY is missing. A Developer ID app must also be notarized."
+            exit 1
+          fi
+          key_path="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY_SECRET.p8"
+          printf '%s\n' "$APPLE_API_PRIVATE_KEY_SECRET" > "$key_path"
+          {
+            echo "APPLE_CERTIFICATE=$(printf '%s' "$APPLE_CERTIFICATE_SECRET" | tr -d '\r\n ')"
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD_SECRET"
+            echo "APPLE_API_ISSUER=$APPLE_API_ISSUER_SECRET"
+            echo "APPLE_API_KEY=$APPLE_API_KEY_SECRET"
+            echo "APPLE_API_KEY_PATH=$key_path"
+            echo "SIGNING=developer-id"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          args=(--target universal-apple-darwin --bundles app,dmg)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then args+=(--config "{\"version\":\"${GITHUB_REF_NAME#v}\"}"); fi
+          npx tauri build "${args[@]}"
+
+      - name: Verify signature
+        run: |
+          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/LedgerVoid.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if [ "$SIGNING" = developer-id ]; then
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+          fi
+          echo "macOS: $SIGNING signature" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read # SignPath downloads the unsigned installer from this run.
+    env:
+      SIGNPATH_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - run: npm ci
+
+      - name: Build
+        run: |
+          args=(--bundles nsis)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then args+=(--config "{\"version\":\"${GITHUB_REF_NAME#v}\"}"); fi
+          npx tauri build "${args[@]}"
+
+      - id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.SIGNPATH_ENABLED == 'true' && 'windows-unsigned' || 'windows' }}
+          path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+      - name: Sign with SignPath
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'ledgervoid' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: desktop/signed
+
+      - name: Verify signature
+        if: env.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem signed -Filter *-setup.exe) {
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid') { throw "$($file.Name): $($signature.Status)" }
+            "$($file.Name) is signed by $($signature.SignerCertificate.Subject)"
+          }
+          "Windows: Authenticode signed" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Report unsigned build
+        if: env.SIGNPATH_ENABLED != 'true'
+        run: |
+          echo "::warning::SIGNPATH_API_TOKEN is not set, so the installer is unsigned. Windows SmartScreen will warn users."
+          echo "Windows: unsigned" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: env.SIGNPATH_ENABLED == 'true'
+        with:
+          name: windows
+          path: desktop/signed/*-setup.exe
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos
+          path: dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows
+          path: dist
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "LedgerVoid $GITHUB_REF_NAME" \
+            --draft --generate-notes
